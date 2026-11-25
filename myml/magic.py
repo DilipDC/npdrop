@@ -1,28 +1,37 @@
-"""Optional IPython %myml magic and completion."""
+"""Optional IPython %myml line magic and completion integration."""
+
+
 def enable_magic():
     try:
         from IPython import get_ipython
-        shell=get_ipython()
-        if shell is None: return
-        try: shell.Completer.greedy=True
-        except Exception: pass
-        if getattr(shell,"_myml_magic_registered",False): return
-        from IPython.core.magic import register_line_magic
-        from .core import ask, template_names
-        @register_line_magic
-        def myml(line):
-            name=line.strip()
-            if name: return ask(name)
-            from .core import list_templates
-            return list_templates()
+        shell = get_ipython()
+        if shell is None:
+            return False
         try:
-            completer=shell.Completer
-            def complete(text, line, cursor_pos):
-                return [n for n in template_names() if n.startswith(text)]
-            completer.custom_matchers.append(lambda context: [])
-            shell.set_hook("complete_command", complete, str_key="%myml")
+            shell.Completer.greedy = True
         except Exception:
             pass
-        shell._myml_magic_registered=True
+
+        try:
+            from .suggester import install_matcher
+            install_matcher(shell)
+        except Exception:
+            pass
+
+        if getattr(shell, "_myml_magic_registered", False):
+            return True
+
+        from IPython.core.magic import register_line_magic
+        from .core import ask, list_templates
+
+        @register_line_magic
+        def myml(line):
+            text = line.strip()
+            if text:
+                return ask(text)
+            return list_templates()
+
+        shell._myml_magic_registered = True
+        return True
     except Exception:
-        return
+        return False

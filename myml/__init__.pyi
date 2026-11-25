@@ -1,19 +1,17 @@
-"""Generated template autocomplete declarations."""
-from typing import Any
-from .core import Snippet, ask, list_templates
+"""Generated template attribute declarations for editor completion."""
+from typing import Any, List, Optional
+from .core import Snippet
 
-def tensorflow() -> Snippet: ...  # TensorFlow import, version check, and reproducible setup
-def tokenizer() -> Snippet: ...  # Basic text tokenization with TensorFlow Keras
-def linear_model() -> Snippet: ...  # Train and evaluate a linear regression model with scikit-learn
-def logistic_regression() -> Snippet: ...  # Binary classification using logistic regression
-def cnn_model() -> Snippet: ...  # Starter Keras CNN for image classification
-def pandas_eda() -> Snippet: ...  # Quick exploratory data analysis with pandas
-def data_cleaning() -> Snippet: ...  # Common pandas missing-value and duplicate cleaning steps
-def kmeans_clustering() -> Snippet: ...  # Scale features and run K-means clustering
-def nlp_preprocessing() -> Snippet: ...  # Normalize text and remove punctuation for NLP
-def train_eval_utils() -> Snippet: ...  # Reusable train-test evaluation helpers for sklearn estimators
-def numpy_basics() -> Snippet: ...  # NumPy array creation, shape, and vectorized operations
-def decision_tree() -> Snippet: ...  # Decision tree classification starter example
-def matplotlib_plot() -> Snippet: ...  # Simple matplotlib line and scatter plots
-def feature_scaling() -> Snippet: ...  # Standardize numeric features with sklearn
-def save_load_model() -> Snippet: ...  # Save and load a trained scikit-learn model using joblib
+all_model: Snippet  # Decision tree and support vector machine classification examples
+cluster: Snippet  # K-means clustering with WCSS elbow plot and cluster visualization
+iqr: Snippet  # IQR and standard-deviation based outlier treatment examples
+linear_regression: Snippet  # Linear regression training, evaluation, and regression-line visualization
+logistic_regression: Snippet  # Logistic regression classification, evaluation, and sigmoid visualization
+tensorflow: Snippet  # TensorFlow import, version check, and reproducible setup
+token: Snippet  # Basic text tokenization with TensorFlow Keras
+LinearRegression: Snippet  # Alias for linear_regression
+LogisticRegression: Snippet  # Alias for logistic_regression
+tokenizer: Snippet  # Alias for token
+
+def suggest(prefix: str = '', previous_line: Optional[str] = None, limit: int = 15) -> List[str]: ...
+def reload_index() -> Any: ...
