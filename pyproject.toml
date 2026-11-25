@@ -3,7 +3,7 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "myml"
+name = "npdrop"
 version = "0.3.0"
 description = "Notebook-friendly machine-learning code templates and full-block source retrieval"
 readme = "README.md"
