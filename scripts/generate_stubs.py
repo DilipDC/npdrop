@@ -1,4 +1,4 @@
-"""Generate explicit template and alias declarations for IDE completion."""
+"""Regenerate myml/__init__.pyi from the packaged source templates."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,24 +10,26 @@ ALIASES = {
 }
 
 lines = [
-    '"""Generated template attribute declarations for editor completion."""',
-    "from typing import Any, List, Optional",
+    '"""Generated declarations for myml verbatim templates and retrieval API."""',
+    "from typing import Any, List, Optional, Union",
     "from .core import Snippet",
     "",
 ]
 for path in sorted(TEMPLATES.glob("*.py")):
     if path.name.startswith("_"):
         continue
-    name = path.stem
-    first = path.read_text(encoding="utf-8").splitlines()[:1]
-    desc = first[0].partition(":")[2].strip() if first and first[0].startswith("# Description:") else "Source code template"
-    lines.append(f"{name}: Snippet  # {desc}")
+    lines.append(f"{path.stem}: Snippet")
 for alias, canonical in sorted(ALIASES.items()):
     lines.append(f"{alias}: Snippet  # Alias for {canonical}")
 lines += [
     "",
-    "def suggest(prefix: str = '', previous_line: Optional[str] = None, limit: int = 15) -> List[str]: ...",
-    "def reload_index() -> Any: ...",
+    "def get_template(name: str) -> Snippet: ...",
+    "def template_names(include_aliases: bool = ...) -> List[str]: ...",
+    "def list_templates() -> List[tuple]: ...",
+    "def ask(query: str) -> Optional[Snippet]: ...",
+    "def sug(query: Optional[str] = ..., rank: int = ...) -> Union[str, list]: ...",
+    "def suggest(query: str = ..., limit: int = ...) -> List[str]: ...",
+    "def reload_index() -> int: ...",
     "",
 ]
 (ROOT / "myml" / "__init__.pyi").write_text("\n".join(lines), encoding="utf-8")

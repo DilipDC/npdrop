@@ -1,17 +1,22 @@
-"""Generated template attribute declarations for editor completion."""
-from typing import Any, List, Optional
+"""Generated declarations for myml's verbatim templates and retrieval API."""
+from typing import Any, List, Optional, Union
 from .core import Snippet
 
-all_model: Snippet  # Decision tree and support vector machine classification examples
-cluster: Snippet  # K-means clustering with WCSS elbow plot and cluster visualization
-iqr: Snippet  # IQR and standard-deviation based outlier treatment examples
-linear_regression: Snippet  # Linear regression training, evaluation, and regression-line visualization
-logistic_regression: Snippet  # Logistic regression classification, evaluation, and sigmoid visualization
-tensorflow: Snippet  # TensorFlow import, version check, and reproducible setup
-token: Snippet  # Basic text tokenization with TensorFlow Keras
-LinearRegression: Snippet  # Alias for linear_regression
-LogisticRegression: Snippet  # Alias for logistic_regression
-tokenizer: Snippet  # Alias for token
+cluster: Snippet
+iqr: Snippet
+linear_regression: Snippet
+logistic_regression: Snippet
+model: Snippet
+tensorflow: Snippet
+token: Snippet
+LinearRegression: Snippet
+LogisticRegression: Snippet
+tokenizer: Snippet
 
-def suggest(prefix: str = '', previous_line: Optional[str] = None, limit: int = 15) -> List[str]: ...
-def reload_index() -> Any: ...
+def get_template(name: str) -> Snippet: ...
+def template_names(include_aliases: bool = ...) -> List[str]: ...
+def list_templates() -> List[tuple]: ...
+def ask(query: str) -> Optional[Snippet]: ...
+def sug(query: Optional[str] = ..., rank: int = ...) -> Union[str, list]: ...
+def suggest(query: str = ..., limit: int = ...) -> List[str]: ...
+def reload_index() -> int: ...

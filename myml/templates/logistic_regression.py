@@ -1,4 +1,3 @@
-# Description: Logistic regression classification, evaluation, and sigmoid visualization
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt

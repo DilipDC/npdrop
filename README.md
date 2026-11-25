@@ -1,66 +1,78 @@
-# myml — notebook ML source templates
+# myml — verbatim notebook ML templates and code retrieval
 
-myml is a lightweight, pip-installable package for inserting reusable machine-learning code into Jupyter Notebook, JupyterLab, Notebook 7, and Google Colab. Template files are read as text through importlib.resources; importing a template never executes the template's ML code.
+myml provides seven reusable Python source templates and a full-block search engine for the personal ML/EDA code in myml/data/train.txt. Template imports read UTF-8 resources and insert their exact text into a fresh notebook cell; template code is never executed during import.
 
-## Install or upgrade
+## Install
 
-~~~bash
-pip install --upgrade --force-reinstall git+https://github.com/DilipDC/npdrop.git
-~~~
-
-Restart the notebook kernel after upgrading. In a notebook, importing a template creates a new editable code cell containing the source:
-
-~~~python
-from myml import all_model
-from myml import iqr, cluster  # queues one next-cell payload per template
-~~~
-
-In local Jupyter, myml uses IPython's payload manager with single=False. In Colab, it first requests a scratch cell and uses a one-click copy card only when that API is unavailable.
-
-## Included templates
-
-| Import | Description |
-|---|---|
-| from myml import all_model | Decision tree and support vector machine examples |
-| from myml import cluster | K-means clustering, WCSS plot, and cluster scatter plot |
-| from myml import iqr | IQR and standard-deviation outlier-treatment code |
-| from myml import linear_regression | Linear regression training, metrics, and plot |
-| from myml import LinearRegression | Alias for linear_regression |
-| from myml import logistic_regression | Logistic regression classification and sigmoid plot |
-| from myml import LogisticRegression | Alias for logistic_regression |
-| from myml import tensorflow | TensorFlow import, version, and seed setup |
-| from myml import token | Keras text tokenizer example |
-| from myml import tokenizer | Alias for token |
-
-Access the code without triggering cell insertion with myml.get_template("cluster").code.
-
-## Base-code completion
-
-The standard-library suggestion index is built from every myml/templates/*.py file at import time. It indexes template names and aliases, AST identifiers and dotted calls, meaningful source lines, and immediate next-line transitions. It registers an IPython v2 matcher without suppressing Jedi or built-in completion.
-
-~~~python
-myml.suggest("pd.read")
-myml.suggest("from myml import ")
-myml.suggest("model.", previous_line="model = LinearRegression()")
-myml.reload_index()  # refresh after adding/editing template files
-~~~
-
-The %myml line magic also supports template names and Tab completion.
-
-## Add a template
-
-Add a .py file under myml/templates/. Put a short description in its first line:
-
-~~~python
-# Description: What this code snippet demonstrates
-~~~
-
-Call myml.reload_index() to rebuild suggestions in the current kernel, and regenerate static IDE declarations with:
+Git install:
 
 ~~~bash
-python scripts/generate_stubs.py
+pip install --upgrade git+https://github.com/DilipDC/npdrop.git
 ~~~
 
-## Requirements
+Windows ZIP install (PowerShell or Command Prompt):
 
-Python 3.9+. Runtime code uses only the Python standard library. IPython is optional and is needed for notebook cell delivery and live Tab integration. Templates may require their respective machine-learning dependencies when you execute the inserted code.
+~~~bash
+py -m pip install --upgrade https://github.com/DilipDC/npdrop/archive/refs/heads/main.zip
+~~~
+
+Restart the notebook kernel after upgrading.
+
+## Use the seven templates
+
+Each import queues an untouched code block in the next editable cell in local Jupyter Notebook, JupyterLab, Notebook 7, and Google Colab.
+
+~~~python
+from myml import cluster
+from myml import iqr
+from myml import linear_regression
+from myml import logistic_regression
+from myml import model
+from myml import tensorflow
+from myml import token
+~~~
+
+Aliases are also supported:
+
+~~~python
+from myml import LinearRegression
+from myml import LogisticRegression
+from myml import tokenizer
+~~~
+
+Use myml.get_template("cluster").code to read source text without inserting a cell. Calling an import or accessing the template attribute again creates another cell.
+
+Local Jupyter uses IPython's payload manager with source="set_next_input" and replace=False. Colab first tries google.colab._frontend.create_scratch_cell(code) and uses a one-click Copy card only if that API fails.
+
+## Search complete code blocks with myml.sug()
+
+The suggestion index is built exclusively from myml/data/train.txt using Python's standard library. Queries support identifier splitting, ML/EDA shorthand, generated acronyms, weighted BM25-style ranking, exact-phrase boosts, and typo-tolerant fuzzy matching.
+
+~~~python
+myml.sug()                        # print every parsed block with its number
+myml.sug("km")                    # insert the best K-Means block
+myml.sug("scatter plot")          # insert the matching scatter-plot block
+myml.sug("hist")                  # histogram block
+myml.sug("logistic regression")  # logistic-regression block
+myml.sug("sactter plot")          # tolerate a typo
+myml.sug("scatter plot", rank=2)  # insert the second-ranked match
+~~~
+
+A query returns the selected full multi-line source block and also queues that exact text into the next notebook cell. The function prints its selected rank and up to three alternative matches. myml.reload_index() rebuilds the index after train.txt is updated.
+
+The training source is available only through myml.sug(); from myml import train is intentionally unsupported.
+
+## Package contents
+
+- myml/templates/: the seven verbatim import templates
+- myml/data/train.txt: the separate EDA/ML suggestion source
+- myml/__init__.pyi: static type declarations
+
+The runtime package has no third-party dependencies. IPython is optional for notebook insertion; ML libraries referenced by inserted template code are needed only when those cells are executed.
+
+## Tests
+
+~~~bash
+python -m pip install -e ".[test]"
+python -m pytest -q
+~~~

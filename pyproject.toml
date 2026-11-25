@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "myml"
-version = "0.2.0"
-description = "Notebook-friendly machine learning code templates and source-indexed completion"
+version = "0.3.0"
+description = "Notebook-friendly machine-learning code templates and full-block source retrieval"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = []
@@ -21,4 +21,4 @@ include-package-data = true
 include = ["myml*"]
 
 [tool.setuptools.package-data]
-myml = ["templates/*.py", "*.pyi"]
+myml = ["templates/*", "data/*", "*.pyi"]

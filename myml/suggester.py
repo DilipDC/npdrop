@@ -1,297 +1,377 @@
-"""Fast standard-library suggestion engine indexed from packaged template source."""
+"""Full-block source retrieval indexed only from myml/data/train.txt."""
 from __future__ import annotations
 
-import ast
 import difflib
+import math
 import re
-from collections import Counter, defaultdict
+from collections import Counter
+from dataclasses import dataclass
+from importlib import resources
 
-from .core import ALIASES, _template_files, _read, template_names
+from .core import _deliver
 
-_IDENTIFIER_RE = re.compile(r"(?<!\.)\b[A-Za-z_]\w*\b")
-_DOTTED_RE = re.compile(r"\b[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\b")
-_WORD_RE = re.compile(r"[A-Za-z_]\w*")
-
-
-def _dotted_name(node):
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _dotted_name(node.value)
-        return f"{parent}.{node.attr}" if parent else node.attr
-    return ""
-
-
-class _SymbolVisitor(ast.NodeVisitor):
-    def __init__(self, symbols):
-        self.symbols = symbols
-
-    def visit_Import(self, node):
-        for item in node.names:
-            self.symbols[item.asname or item.name.split(".")[0]] += 5
-            self.symbols[item.name] += 4
-
-    def visit_ImportFrom(self, node):
-        if node.module:
-            self.symbols[node.module] += 4
-            self.symbols[node.module.split(".")[0]] += 2
-        for item in node.names:
-            if item.name != "*":
-                self.symbols[item.asname or item.name] += 5
-
-    def visit_FunctionDef(self, node):
-        self.symbols[node.name] += 6
-        self.generic_visit(node)
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_ClassDef(self, node):
-        self.symbols[node.name] += 6
-        self.generic_visit(node)
-
-    def visit_Name(self, node):
-        self.symbols[node.id] += 1
-
-    def visit_Attribute(self, node):
-        dotted = _dotted_name(node)
-        if dotted:
-            self.symbols[dotted] += 5
-            self.symbols[node.attr] += 2
-        self.generic_visit(node)
-
-    def visit_arg(self, node):
-        self.symbols[node.arg] += 1
+_TOKEN_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+_NUMBERED_PLOT_RE = re.compile(
+    r"^\s*#\s*\d+\.\s*(?:heatmap|box\s+plot|scatter\s+plot|line\s+plot|"
+    r"bar\s+plot|count\s+plot|histogram|pie\s+chart|pair\s+plot)\b",
+    re.IGNORECASE,
+)
+_SYNONYM_GROUPS = (
+    ("km", "kmeans", "k-means"),
+    ("scatter", "scatterplot", "sp"),
+    ("hist", "histogram", "histplot"),
+    ("box", "boxplot", "outlier", "iqr"),
+    ("bar", "barplot", "count", "countplot"),
+    ("heat", "heatmap", "hm", "corr", "correlation"),
+    ("pair", "pairplot"),
+    ("pie", "piechart"),
+    ("lr", "linear", "linearregression"),
+    ("log", "logistic", "logisticregression"),
+    ("dt", "tree", "decisiontree", "decisiontreeclassifier"),
+    ("rf", "forest", "randomforest", "randomforestclassifier"),
+    ("svm", "svc", "supportvectormachine"),
+    ("cm", "confusion", "confusionmatrix"),
+    ("tts", "split", "train_test_split"),
+    ("cv", "crossvalidation", "cross_val_score"),
+    ("null", "na", "fillna", "dropna", "missing", "nan"),
+    ("tf", "tensorflow", "keras", "cnn"),
+    ("tok", "token", "tokenizer", "nltk", "stem", "stemming", "lem",
+     "lemma", "lemmatize", "lemmatization", "ngram", "ngrams"),
+    ("lam", "lambda", "map", "filter", "reduce"),
+)
+_SYNONYMS = {}
+for _group in _SYNONYM_GROUPS:
+    _members = frozenset(_group)
+    for _member in _members:
+        _SYNONYMS[_member] = _members
 
 
-def _normalise_line(line):
-    return re.sub(r"\s+", " ", line.strip())
+@dataclass(frozen=True)
+class CodeBlock:
+    title: str
+    code: str
+    index: int
+    header_terms: Counter
+    identifier_terms: Counter
+    text_terms: Counter
+
+    @property
+    def line_count(self):
+        return len(self.code.splitlines())
 
 
-def _meaningful_lines(code):
-    lines = []
-    for raw in code.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
+def _resource_text():
+    return resources.files("myml").joinpath("data", "train.txt").read_text(
+        encoding="utf-8"
+    )
+
+
+def _has_executable_content(lines):
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
             continue
-        if re.fullmatch(r"[-=]{3,}.*", line):
+        if stripped.startswith(("import ", "from ")):
             continue
-        lines.append(line)
-    return lines
+        return True
+    return False
 
 
-class BaseCodeIndex:
-    def __init__(self):
-        self.names = template_names(include_aliases=True)
-        self.symbols = Counter()
-        self.lines = Counter()
-        self.transitions = defaultdict(Counter)
-        self.sources = {}
-        self.reload()
+def _has_data_setup_ahead(lines, index):
+    lookahead = "".join(lines[index:index + 45])
+    if re.search(r"(?m)^\s*df\s*=\s*pd\.read_csv\s*\(", lookahead):
+        return True
+    if re.search(r"(?m)^\s*nums\s*=", lookahead):
+        return True
+    if re.search(r"(?m)^\s*txt\s*=", lookahead) and "word_tokenize" in lookahead:
+        return True
+    return False
 
-    def reload(self):
-        self.symbols.clear()
-        self.lines.clear()
-        self.transitions.clear()
-        self.sources.clear()
-        self.names = template_names(include_aliases=True)
-        for name in template_names():
-            code = _read(name)
-            self.sources[name] = code
-            try:
-                tree = ast.parse(code)
-                _SymbolVisitor(self.symbols).visit(tree)
-            except (SyntaxError, ValueError, TypeError):
-                # Some notebook fragments include explanatory separators.
-                # Regex indexing still captures identifiers from these snippets.
-                pass
-            for match in _IDENTIFIER_RE.findall(code):
-                self.symbols[match] += 1
-            for match in _DOTTED_RE.findall(code):
-                self.symbols[match] += 4
-            code_lines = _meaningful_lines(code)
-            previous = None
-            for line in code_lines:
-                normalized = _normalise_line(line)
-                if not normalized:
+
+def _parse_code_blocks(source):
+    """Split at cell/section headers and logical gaps, retaining source lines."""
+    lines = source.splitlines(keepends=True)
+    if not lines:
+        return []
+
+    starts = {0}
+    current_start = 0
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+
+        if index > current_start:
+            if stripped.startswith("# %%"):
+                if _has_executable_content(lines[current_start:index]):
+                    starts.add(index)
+                    current_start = index
+            elif _NUMBERED_PLOT_RE.match(line):
+                # Keep the shared seaborn/matplotlib imports with the first plot.
+                if _has_executable_content(lines[current_start:index]):
+                    starts.add(index)
+                    current_start = index
+            elif stripped.startswith(("import ", "from ")):
+                if _has_executable_content(lines[current_start:index]) and _has_data_setup_ahead(lines, index):
+                    starts.add(index)
+                    current_start = index
+                elif stripped == "import nltk" and _has_executable_content(lines[current_start:index]):
+                    starts.add(index)
+                    current_start = index
+                elif stripped == "import seaborn as sns" and _has_executable_content(lines[current_start:index]):
+                    starts.add(index)
+                    current_start = index
+                elif stripped == "from functools import reduce" and _has_executable_content(lines[current_start:index]):
+                    starts.add(index)
+                    current_start = index
+
+        if not stripped:
+            run_end = index
+            while run_end < len(lines) and not lines[run_end].strip():
+                run_end += 1
+            run_length = run_end - index
+            if run_length >= 3 and run_end < len(lines):
+                starts.add(run_end)
+                current_start = run_end
+            index = run_end
+            continue
+        index += 1
+
+    ordered = sorted(starts)
+    blocks = []
+    for block_index, start in enumerate(ordered):
+        end = ordered[block_index + 1] if block_index + 1 < len(ordered) else len(lines)
+        code = "".join(lines[start:end])
+        if not code.strip():
+            continue
+        title = _block_title(code)
+        comments = "\n".join(
+            line.strip().lstrip("#").strip(" -\t")
+            for line in code.splitlines()
+            if line.lstrip().startswith("#")
+        )
+        executable = "\n".join(
+            line for line in code.splitlines()
+            if not line.lstrip().startswith("#")
+        )
+        blocks.append(
+            CodeBlock(
+                title=title,
+                code=code,
+                index=len(blocks),
+                header_terms=_identifier_terms(title + "\n" + comments),
+                identifier_terms=_identifier_terms(executable),
+                text_terms=_identifier_terms(code),
+            )
+        )
+    return blocks
+
+
+def _block_title(code):
+    for line in code.splitlines():
+        candidate = line.strip()
+        if candidate.startswith("#"):
+            candidate = candidate.lstrip("#").strip(" -\t")
+            if candidate and not re.fullmatch(r"[-=]+", candidate):
+                return candidate[:100]
+    lowered = code.lower()
+    if "kmeans" in lowered or "k-means" in lowered:
+        return "K-Means clustering"
+    if "logisticregression" in lowered:
+        return "Logistic regression"
+    if "linearregression" in lowered:
+        return "Linear regression"
+    if "decisiontree" in lowered or "randomforest" in lowered:
+        return "Machine-learning model examples"
+    if "scatterplot" in lowered or "plt.scatter" in lowered:
+        return "Scatter plot"
+    if "histplot" in lowered:
+        return "Histogram"
+    if "heatmap" in lowered:
+        return "Heatmap"
+    if "pairplot" in lowered:
+        return "Pair plot"
+    if "word_tokenize" in lowered:
+        return "Tokenization and n-grams"
+    if "lambda" in lowered:
+        return "Lambda, map, filter, and reduce"
+    if "iqr" in lowered:
+        return "IQR outlier handling"
+    return "Python / EDA / ML code"
+
+
+def _identifier_terms(text):
+    terms = Counter()
+    for raw in _TOKEN_RE.findall(text):
+        terms[raw.lower()] += 1
+        for dotted in raw.split("."):
+            camel = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", dotted)
+            camel = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", camel)
+            parts = [part.lower() for part in re.split(r"[_\W]+", camel) if part]
+            for part in parts:
+                terms[part] += 1
+            if len(parts) > 1:
+                terms["".join(parts)] += 1
+                acronym = "".join(part[0] for part in parts if part)
+                if len(acronym) >= 2:
+                    terms[acronym] += 2
+                    if len(acronym) > 2:
+                        terms[acronym[:2]] += 1
+    return terms
+
+
+def _expand_terms(terms):
+    expanded = set(terms)
+    for term in tuple(expanded):
+        expanded.update(_SYNONYMS.get(term, ()))
+    return expanded
+
+
+def _normal_phrase(text):
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+class FullBlockIndex:
+    def __init__(self, source=None):
+        self.source = _resource_text() if source is None else source
+        self.blocks = _parse_code_blocks(self.source)
+        self._document_frequency = Counter()
+        self._weighted_terms = []
+        self._document_lengths = []
+        self._average_length = 0.0
+        self._prepare()
+
+    def _prepare(self):
+        self._document_frequency.clear()
+        self._weighted_terms.clear()
+        self._document_lengths.clear()
+        for block in self.blocks:
+            weighted = Counter()
+            for term, count in block.header_terms.items():
+                weighted[term] += count * 4.5
+            for term, count in block.identifier_terms.items():
+                weighted[term] += count * 2.8
+            for term, count in block.text_terms.items():
+                weighted[term] += count * 0.65
+            expanded = Counter()
+            for term, count in weighted.items():
+                expanded[term] += count
+                for equivalent in _SYNONYMS.get(term, ()):
+                    expanded[equivalent] += count * 0.55
+            self._weighted_terms.append(expanded)
+            self._document_lengths.append(sum(expanded.values()))
+            self._document_frequency.update(expanded.keys())
+        self._average_length = (
+            sum(self._document_lengths) / len(self._document_lengths)
+            if self._document_lengths else 1.0
+        )
+
+    def _score(self, query, block_index):
+        block = self.blocks[block_index]
+        document = self._weighted_terms[block_index]
+        doc_length = self._document_lengths[block_index]
+        query_terms = _expand_terms(_identifier_terms(query))
+        if not query_terms:
+            return 0.0
+
+        score = 0.0
+        count_docs = max(1, len(self.blocks))
+        k1 = 1.5
+        b = 0.75
+        for term in query_terms:
+            frequency = document.get(term, 0.0)
+            if not frequency:
+                continue
+            df = self._document_frequency.get(term, 0)
+            idf = math.log(1.0 + (count_docs - df + 0.5) / (df + 0.5))
+            denominator = frequency + k1 * (
+                1.0 - b + b * doc_length / max(self._average_length, 1e-9)
+            )
+            score += idf * (frequency * (k1 + 1.0)) / denominator
+
+        query_phrase = _normal_phrase(query)
+        header_phrase = _normal_phrase(
+            block.title + "\n" + "\n".join(
+                line for line in block.code.splitlines()
+                if line.lstrip().startswith("#")
+            )
+        )
+        code_phrase = _normal_phrase(block.code)
+        if query_phrase and query_phrase in header_phrase:
+            score += 12.0 + len(query_phrase.split()) * 2.0
+        elif query_phrase and query_phrase in code_phrase:
+            score += 5.0
+
+        if query_phrase:
+            available_terms = set(document)
+            for word in query_phrase.split():
+                if len(word) < 4 or word in available_terms:
                     continue
-                self.lines[normalized] += 1
-                if previous is not None:
-                    self.transitions[previous][normalized] += 1
-                previous = normalized
-        return self
+                if difflib.get_close_matches(word, available_terms, n=2, cutoff=0.72):
+                    score += 0.8
+        return score
 
-    def suggest(self, prefix="", previous_line=None, limit=15):
-        raw = str(prefix or "")
-        import_match = re.search(r"\bfrom\s+myml\s+import\s+([A-Za-z_]\w*)?$", raw)
-        if import_match or re.search(r"\bfrom\s+myml\s+import\s*$", raw):
-            fragment = import_match.group(1) if import_match and import_match.group(1) else ""
-            return self._name_suggestions(fragment, limit)
-
-        magic_match = re.search(r"(?:%myml\s+|\bmyml\.)([A-Za-z_]\w*)?$", raw)
-        if magic_match:
-            fragment = magic_match.group(1) or ""
-            return self._name_suggestions(fragment, limit, helpers=True)
-
-        fragment = raw.rsplit("\n", 1)[-1].strip()
-        return self._code_suggestions(fragment, previous_line, limit)
-
-    def _name_suggestions(self, fragment, limit, helpers=False):
-        items = list(self.names)
-        if helpers:
-            items.extend(["ask", "suggest", "reload_index", "list_templates", "get_template"])
-        matches = [item for item in items if item.lower().startswith(fragment.lower())]
-        return matches[:limit]
-
-    def _code_suggestions(self, fragment, previous_line, limit):
-        fragment = fragment.strip()
-        scored = {}
-        previous = _normalise_line(previous_line) if previous_line else None
-        next_lines = self.transitions.get(previous, {}) if previous else {}
-
-        # Full source-line completions: prefix matches rank ahead of fuzzy matches.
-        for line, frequency in self.lines.items():
-            if fragment and line.lower().startswith(fragment.lower()):
-                score = 100 + min(frequency, 5)
-                if line in next_lines:
-                    score += 20 + next_lines[line]
-                scored[line] = max(scored.get(line, 0), score)
-
-        # Prefix matches for symbols, including dotted method/attribute chains.
-        for symbol, frequency in self.symbols.items():
-            if fragment and symbol.lower().startswith(fragment.lower()):
-                scored[symbol] = max(scored.get(symbol, 0), 80 + min(frequency, 10))
-
-        # Context transitions are valuable when the current line is empty or partial.
-        if next_lines:
-            for line, frequency in next_lines.items():
-                if not fragment or line.lower().startswith(fragment.lower()):
-                    scored[line] = max(scored.get(line, 0), 70 + min(frequency, 10))
-
-        # Fuzzy token matches are lower priority and never replace Jedi matches.
-        if fragment and len(fragment) >= 2:
-            candidates = set(self.symbols) | set(self.lines)
-            for candidate in candidates:
-                if candidate in scored:
-                    continue
-                ratio = difflib.SequenceMatcher(None, fragment.lower(), candidate.lower()).ratio()
-                if ratio >= 0.62:
-                    scored[candidate] = 30 + ratio * 20
-
-        ranked = sorted(scored, key=lambda item: (-scored[item], item))
-        return ranked[:limit]
+    def search(self, query):
+        if not self.blocks:
+            return []
+        ranked = [
+            (self._score(str(query), index), block)
+            for index, block in enumerate(self.blocks)
+        ]
+        ranked = [item for item in ranked if item[0] > 0]
+        ranked.sort(key=lambda item: (-item[0], item[1].index))
+        return [block for _, block in ranked]
 
 
-_INDEX = BaseCodeIndex()
-
-
-def suggest(prefix="", previous_line=None, limit=15):
-    """Return ranked suggestions from all current template files."""
-    return _INDEX.suggest(prefix, previous_line=previous_line, limit=limit)
+_INDEX = FullBlockIndex()
 
 
 def reload_index():
-    """Re-read template resources and rebuild the in-memory suggestion index."""
-    _INDEX.reload()
-    return _INDEX
+    """Reload myml/data/train.txt and rebuild the source-block ranking index."""
+    global _INDEX
+    _INDEX = FullBlockIndex()
+    return len(_INDEX.blocks)
 
 
-def _matcher_result(context):
-    """IPython v2 context matcher body; never suppresses built-in/Jedi results."""
-    try:
-        all_lines = context.full_text.split("\n")
-        cursor_line = max(0, min(context.cursor_line, len(all_lines) - 1))
-        current_line = all_lines[cursor_line][:context.cursor_position]
-        previous = next(
-            (line.strip() for line in reversed(all_lines[:cursor_line]) if line.strip()),
-            None,
-        )
-        before_current = current_line
-        import_match = re.search(r"\bfrom\s+myml\s+import\s+([A-Za-z_]\w*)?$", before_current)
-        import_empty = re.search(r"\bfrom\s+myml\s+import\s*$", before_current)
-        module_match = re.search(r"\bmyml\.([A-Za-z_]\w*)?$", before_current)
-        magic_match = re.search(r"%myml\s+([A-Za-z_]\w*)?$", before_current)
+def list_blocks():
+    """Print and return a numbered inventory of every parsed training block."""
+    for number, block in enumerate(_INDEX.blocks, 1):
+        print(f"{number}. {block.title} ({block.line_count} lines)")
+    return list(_INDEX.blocks)
 
-        from IPython.core.completer import SimpleCompletion
 
-        if import_match or import_empty:
-            fragment = import_match.group(1) if import_match and import_match.group(1) else ""
-            candidates = _INDEX._name_suggestions(fragment, 50)
-            matched_fragment = fragment
-        elif module_match or magic_match:
-            match = module_match or magic_match
-            fragment = match.group(1) or ""
-            candidates = _INDEX._name_suggestions(fragment, 50, helpers=True)
-            matched_fragment = fragment
-        else:
-            fragment = current_line.strip()
-            if not fragment:
-                fragment = context.token or ""
-            candidates = _INDEX._code_suggestions(fragment, previous, 30)
-            matched_fragment = fragment
+def sug(query=None, rank=1):
+    """Return and insert a complete matching source block; rank is one-based."""
+    if query is None or not str(query).strip():
+        return list_blocks()
+    if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
+        raise ValueError("rank must be a positive integer")
 
-        return {
-            "completions": [SimpleCompletion(text=item) for item in candidates],
-            "matched_fragment": matched_fragment,
-            "ordered": True,
-            "suppress": False,
-        }
-    except Exception:
-        return {"completions": [], "suppress": False}
+    matches = _INDEX.search(str(query))
+    if not matches:
+        print(f"myml.sug: no source block matched {query!r}")
+        return ""
+    if rank > len(matches):
+        raise IndexError(f"rank {rank} is outside the {len(matches)} matching blocks")
+
+    selected = matches[rank - 1]
+    print(
+        f"myml.sug: selected rank {rank} — {selected.title} "
+        f"({selected.line_count} lines)"
+    )
+    for number, block in enumerate(matches[:4], 1):
+        if number != rank:
+            print(f"  rank {number}: {block.title}")
+
+    _deliver("sug", selected.code)
+    return selected.code
+
+
+def suggest(query="", limit=10):
+    """Compatibility search returning matching block titles."""
+    return [block.title for block in _INDEX.search(query)[:max(0, int(limit))]]
 
 
 def install_matcher(shell=None):
-    """Install the v2 matcher where available, with an older hook fallback."""
-    try:
-        if shell is None:
-            from IPython import get_ipython
-            shell = get_ipython()
-        if shell is None:
-            return False
-        completer = shell.Completer
-        completer.greedy = True
-        custom = getattr(completer, "custom_matchers", None)
-        if isinstance(custom, list):
-            try:
-                from IPython.core.completer import context_matcher
-                matcher = context_matcher(priority=100, identifier="myml.base_code_index")(_matcher_result)
-                matcher_id = getattr(matcher, "matcher_identifier", "myml.base_code_index")
-                already = any(getattr(item, "matcher_identifier", None) == matcher_id for item in custom)
-                if not already:
-                    custom.append(matcher)
-
-                # IPython's built-in custom-completer matcher normally suppresses
-                # other matchers for import completions. Keep native/Jedi and myml
-                # results together specifically for "from myml import ...".
-                if not getattr(completer, "_myml_import_completion_compat", False):
-                    original_custom_matcher = getattr(completer, "custom_completer_matcher", None)
-                    if original_custom_matcher is not None:
-                        @context_matcher(
-                            priority=getattr(original_custom_matcher, "matcher_priority", 0),
-                            identifier=getattr(original_custom_matcher, "matcher_identifier", "IPCompleter.custom_completer_matcher"),
-                        )
-                        def keep_import_completions(context):
-                            result = original_custom_matcher(context)
-                            if re.search(r"\bfrom\s+myml\s+import\b", context.text_until_cursor):
-                                result["suppress"] = False
-                            return result
-
-                        completer.custom_completer_matcher = keep_import_completions
-                    completer._myml_import_completion_compat = True
-                return True
-            except Exception:
-                pass
-
-        def complete(text, line, cursor_pos):
-            try:
-                if "from myml import" in line:
-                    return _INDEX._name_suggestions(text, 50)
-                if "%myml" in line or "myml." in line:
-                    return _INDEX._name_suggestions(text, 50, helpers=True)
-            except Exception:
-                return []
-            return []
-
-        shell.set_hook("complete_command", complete, str_key="%myml")
-        return True
-    except Exception:
-        return False
+    """No external completion matcher is required by the source retrieval API."""
+    return False
