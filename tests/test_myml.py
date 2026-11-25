@@ -125,8 +125,8 @@ def test_from_import_statements_create_one_payload_per_template(monkeypatch):
     exec("from myml import all_model", namespace)
 
     assert len(calls) == 4
-    assert [payload["text"].splitlines()[0] for payload, _ in calls] == [
-        "q1=df['Annual Income (k$)'].quantile(0.25)",
+    assert calls[0][0]["text"].lstrip().startswith("---iqr-----\\nq1=df['Annual Income (k$)'].quantile(0.25)")
+    assert [payload["text"].splitlines()[0] for payload, _ in calls[1:]] == [
         "from sklearn.cluster import KMeans",
         "from sklearn.tree import DecisionTreeClassifier",
         "from sklearn.tree import DecisionTreeClassifier",
