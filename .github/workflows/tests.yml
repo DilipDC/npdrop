@@ -16,6 +16,29 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - run: python -m pip install --upgrade pip pytest
       - run: python -m pytest -q
+      - run: python -m pip wheel --no-deps . -w dist
+      - name: Verify wheel contains templates, training data, and stubs
+        run: |
+          python - <<'PY'
+          import glob
+          import zipfile
+          wheel = zipfile.ZipFile(glob.glob("dist/*.whl")[0])
+          names = set(wheel.namelist())
+          required = {
+              "myml/__init__.pyi",
+              "myml/data/train.txt",
+              "myml/templates/cluster.py",
+              "myml/templates/iqr.py",
+              "myml/templates/linear_regression.py",
+              "myml/templates/logistic_regression.py",
+              "myml/templates/model.py",
+              "myml/templates/tensorflow.py",
+              "myml/templates/token.py",
+          }
+          missing = required - names
+          assert not missing, f"Missing wheel package data: {sorted(missing)}"
+          print("Wheel package data verified")
+          PY
