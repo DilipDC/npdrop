@@ -1,4 +1,4 @@
-"""Regenerate myml/__init__.pyi from the packaged source templates."""
+"""Regenerate myml/__init__.pyi from packaged source templates."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,5 +32,9 @@ lines += [
     "def reload_index() -> int: ...",
     "",
 ]
-(ROOT / "myml" / "__init__.pyi").write_text("\n".join(lines), encoding="utf-8")
+(ROOT / "myml" / "__init__.pyi").write_text(
+    "\n".join(lines),
+    encoding="utf-8",
+    errors="replace",
+)
 print("Wrote myml/__init__.pyi")

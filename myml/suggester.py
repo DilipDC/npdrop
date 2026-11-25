@@ -8,7 +8,7 @@ from collections import Counter
 from dataclasses import dataclass
 from importlib import resources
 
-from .core import _deliver
+from .core import deliver
 
 _TOKEN_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 _NUMBERED_PLOT_RE = re.compile(
@@ -61,9 +61,9 @@ class CodeBlock:
 
 
 def _resource_text():
-    return resources.files("myml").joinpath("data", "train.txt").read_text(
-        encoding="utf-8"
-    )
+    """Read the training source using explicit UTF-8 with replacement fallback."""
+    resource = resources.files("myml").joinpath("data", "train.txt")
+    return resource.read_text(encoding="utf-8", errors="replace")
 
 
 def _has_executable_content(lines):
@@ -107,7 +107,6 @@ def _parse_code_blocks(source):
                     starts.add(index)
                     current_start = index
             elif _NUMBERED_PLOT_RE.match(line):
-                # Keep the shared seaborn/matplotlib imports with the first plot.
                 if _has_executable_content(lines[current_start:index]):
                     starts.add(index)
                     current_start = index
@@ -129,8 +128,7 @@ def _parse_code_blocks(source):
             run_end = index
             while run_end < len(lines) and not lines[run_end].strip():
                 run_end += 1
-            run_length = run_end - index
-            if run_length >= 3 and run_end < len(lines):
+            if run_end - index >= 3 and run_end < len(lines):
                 starts.add(run_end)
                 current_start = run_end
             index = run_end
@@ -341,35 +339,58 @@ def list_blocks():
 
 
 def sug(query=None, rank=1):
-    """Return and insert a complete matching source block; rank is one-based."""
-    if query is None or not str(query).strip():
-        return list_blocks()
-    if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
-        raise ValueError("rank must be a positive integer")
+    """Return and insert a complete matching source block; rank is one-based.
 
-    matches = _INDEX.search(str(query))
-    if not matches:
-        print(f"myml.sug: no source block matched {query!r}")
+    The public API is deliberately defensive for notebook use: indexing,
+    ranking, validation, and cell-delivery failures are reported as a message
+    and a safe empty result instead of escaping into the notebook.
+    """
+    try:
+        if query is None or not str(query).strip():
+            try:
+                return list_blocks()
+            except Exception as error:
+                print(f"myml.sug: unable to list training blocks ({error})")
+                return []
+
+        if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
+            print("myml.sug: rank must be a positive integer")
+            return ""
+
+        matches = _INDEX.search(str(query))
+        if not matches:
+            print(f"myml.sug: no source block matched {query!r}")
+            return ""
+        if rank > len(matches):
+            print(f"myml.sug: rank {rank} is outside the {len(matches)} matches")
+            return ""
+
+        selected = matches[rank - 1]
+        print(
+            f"myml.sug: selected rank {rank} — {selected.title} "
+            f"({selected.line_count} lines)"
+        )
+        for number, block in enumerate(matches[:4], 1):
+            if number != rank:
+                print(f"  rank {number}: {block.title}")
+
+        try:
+            deliver("sug", selected.code, replace=False)
+        except Exception as error:
+            # Delivery failures must not discard a successful code retrieval.
+            print(f"myml.sug: code found but notebook insertion failed ({error})")
+        return selected.code
+    except Exception as error:
+        print(f"myml.sug: unable to retrieve code ({type(error).__name__}: {error})")
         return ""
-    if rank > len(matches):
-        raise IndexError(f"rank {rank} is outside the {len(matches)} matching blocks")
-
-    selected = matches[rank - 1]
-    print(
-        f"myml.sug: selected rank {rank} — {selected.title} "
-        f"({selected.line_count} lines)"
-    )
-    for number, block in enumerate(matches[:4], 1):
-        if number != rank:
-            print(f"  rank {number}: {block.title}")
-
-    _deliver("sug", selected.code)
-    return selected.code
 
 
 def suggest(query="", limit=10):
     """Compatibility search returning matching block titles."""
-    return [block.title for block in _INDEX.search(query)[:max(0, int(limit))]]
+    try:
+        return [block.title for block in _INDEX.search(query)[:max(0, int(limit))]]
+    except Exception:
+        return []
 
 
 def install_matcher(shell=None):

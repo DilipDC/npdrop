@@ -1,4 +1,4 @@
-"""Safe, verbatim template loading and notebook cell delivery."""
+"""Safe, UTF-8 template loading and notebook cell delivery."""
 from __future__ import annotations
 
 import html
@@ -38,9 +38,12 @@ def resolve_template_name(name: str) -> str:
 
 
 def _read(name: str) -> str:
-    """Read a resource as UTF-8 text without importing the source as Python."""
+    """Read a template as UTF-8 text without importing or executing its source."""
     canonical = resolve_template_name(name)
-    return _template_files()[canonical].read_text(encoding="utf-8")
+    return _template_files()[canonical].read_text(
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 def _description(code: str) -> str:
@@ -72,8 +75,17 @@ onclick="navigator.clipboard.writeText(this.parentElement.querySelector('pre').i
         return False
 
 
-def _deliver(name: str, code: str, replace: bool = False) -> None:
-    """Deliver the unchanged code to Colab or the next local Jupyter cell."""
+def deliver(name: str, code: str, replace: bool = False) -> bool:
+    """Insert code in Colab or the next local Jupyter cell.
+
+    Returns True when a notebook delivery mechanism accepted the code. Outside
+    notebooks, or when no local payload manager is available, prints the code.
+    Local Jupyter never falls back to an HTML copy card.
+    """
+    source = str(code)
+
+    # Try Colab explicitly first. If Colab is present but its scratch-cell API
+    # is missing or raises, use the one-click HTML card as the Colab fallback.
     try:
         import google.colab  # type: ignore  # noqa: F401
     except Exception:
@@ -84,30 +96,44 @@ def _deliver(name: str, code: str, replace: bool = False) -> None:
     if google_colab_available:
         try:
             from google.colab import _frontend  # type: ignore
-            _frontend.create_scratch_cell(code)
-            return
-        except Exception:
-            if _colab_copy_card(name, code):
-                return
-            print(code, end="" if code.endswith("\n") else "\n")
-            return
 
-    # Local Jupyter/JupyterLab/Notebook 7: never use an HTML fallback.
+            _frontend.create_scratch_cell(source)
+            return True
+        except Exception:
+            if _colab_copy_card(name, source):
+                return True
+            print(source, end="" if source.endswith("\n") else "\n")
+            return False
+
+    # Local Jupyter/JupyterLab/Notebook 7. Check both the IPython instance and
+    # payload manager before accessing write_payload; do not show HTML here.
     try:
         from IPython import get_ipython
 
         ip = get_ipython()
-        payload_manager = getattr(ip, "payload_manager", None) if ip is not None else None
-        if payload_manager is not None:
-            payload_manager.write_payload(
-                {"source": "set_next_input", "text": code, "replace": replace},
-                single=False,
-            )
-            return
+        if ip is not None:
+            payload_manager = getattr(ip, "payload_manager", None)
+            writer = getattr(payload_manager, "write_payload", None)
+            if callable(writer):
+                writer(
+                    {
+                        "source": "set_next_input",
+                        "text": source,
+                        "replace": replace,
+                    },
+                    single=False,
+                )
+                return True
     except Exception:
+        # Missing/broken IPython state must not make sug() or template imports fail.
         pass
 
-    print(code, end="" if code.endswith("\n") else "\n")
+    print(source, end="" if source.endswith("\n") else "\n")
+    return False
+
+
+# Backward-compatible private name used by earlier myml releases.
+_deliver = deliver
 
 
 class Snippet:
@@ -119,11 +145,11 @@ class Snippet:
         self.description = _description(code)
 
     def show(self):
-        _deliver(self.name, self.code)
+        deliver(self.name, self.code)
         return self
 
     def insert(self, replace: bool = False):
-        _deliver(self.name, self.code, replace=replace)
+        deliver(self.name, self.code, replace=replace)
         return self
 
     def save(self, filename):
@@ -163,7 +189,9 @@ def ask(query):
         words = set(re.findall(r"[a-z0-9]+", (name + " " + code).lower()))
         query_words = set(re.findall(r"[a-z0-9]+", query))
         overlap = len(words & query_words) / max(1, len(query_words))
-        fuzzy = difflib.SequenceMatcher(None, query, name.replace("_", " ").lower()).ratio()
+        fuzzy = difflib.SequenceMatcher(
+            None, query, name.replace("_", " ").lower()
+        ).ratio()
         ranked.append((overlap * 0.7 + fuzzy * 0.3, name))
 
     ranked.sort(reverse=True)

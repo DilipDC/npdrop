@@ -9,7 +9,8 @@ from .core import (
     list_templates,
     template_names,
 )
-from .suggester import reload_index, sug, suggest
+from .suggester import reload_index, suggest
+from .suggester import sug as sug
 from .magic import enable_magic
 
 __all__ = [
