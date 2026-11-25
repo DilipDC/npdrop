@@ -1,4 +1,6 @@
 # Description: IQR and standard-deviation based outlier treatment examples
+
+---iqr-----
 q1=df['Annual Income (k$)'].quantile(0.25)
 q3=df['Annual Income (k$)'].quantile(0.75)
 iqr=q3-q1
